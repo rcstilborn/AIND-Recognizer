@@ -1,12 +1,14 @@
 import math
 import statistics
 import warnings
+import logging
 
 import numpy as np
 from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import KFold
 from asl_utils import combine_sequences
 
+logging.basicConfig(level=logging.ERROR)
 
 class ModelSelector(object):
     '''
@@ -75,9 +77,21 @@ class SelectorBIC(ModelSelector):
         :return: GaussianHMM object
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+        results = list()
+        for num_components in range(self.min_n_components, self.max_n_components+1):
+            try:
+                model = self.base_model(num_components)
+                #p = num_components + (num_components * (num_components-1)) + (2 * len(model.means_) * len(model.means_[0]))
+                p = num_components*num_components + 2*num_components*len(self.X) - 1
+                bic = -2 * model.score(self.X, self.lengths) + p * math.log(len(self.X))
+                results.append((bic,model))
+            except Exception as e:
+                logging.warning("{} caught: {}".format(type(e),e))
+                pass
+        if len(results)==0:
+            return self.base_model(self.n_constant)
+        else:
+            return min(results)[1]   
 
 
 class SelectorDIC(ModelSelector):
@@ -90,10 +104,37 @@ class SelectorDIC(ModelSelector):
     '''
 
     def select(self):
+        """ select the best model for self.this_word based on
+        DIC score for n between self.min_n_components and self.max_n_components
+
+        :return: GaussianHMM object
+        """
+
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+        results = list()
+        for num_components in range(self.min_n_components, self.max_n_components+1):
+            try:
+                model = self.base_model(num_components) #Build the model
+                word_score = model.score(self.X, self.lengths) #Score the model for the current word
+                other_scores = 0
+                for word in self.hwords:
+                    if(word != self.this_word): #Exclude current word
+                        X, lengths = self.hwords[word]
+                        try:
+                            other_scores += model.score(X,lengths)
+                        except Exception as e:
+                            logging.warning("{} caught while scoring model for word {}: {}".format(word,type(e),e))
+                            pass
+                results.append((word_score-(other_scores/(len(self.hwords)-1)),model))        
+            
+            except Exception as e:
+                logging.warning("{} caught: {}".format(type(e),e))
+                pass
+        if len(results)==0:
+            return self.base_model(self.n_constant)
+        else:
+            return max(results)[1]
 
 
 class SelectorCV(ModelSelector):
@@ -102,7 +143,42 @@ class SelectorCV(ModelSelector):
     '''
 
     def select(self):
+        """ select the best model for self.this_word based on
+        average log Likelihood of cross-validation folds for n between 
+        self.min_n_components and self.max_n_components
+
+        :return: GaussianHMM object
+        """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        if len(self.sequences) < 3:
+            logging.warning("Not enough sequences to split into folds - using self.n_constant states")
+            return self.base_model(self.n_constant)
+
+        results = list()
+        split_method = KFold()
+        for num_components in range(self.min_n_components, self.max_n_components+1):               
+            score=0
+            model = GaussianHMM(n_components=num_components, covariance_type="diag", n_iter=1000,
+                                    random_state=self.random_state, verbose=False)
+            logging.debug("Built model with {} hidden states".format(num_components))
+            folds_run=0
+            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                try:
+                    logging.debug("Train fold indices:{} Test fold indices:{}".format(cv_train_idx, cv_test_idx))  # view indices of the folds
+                    train_X, train_lengths = combine_sequences(cv_train_idx,self.sequences)
+                    cv_X, cv_lengths = combine_sequences(cv_test_idx,self.sequences)
+                    model.fit(train_X, train_lengths)
+                    score += model.score(cv_X, cv_lengths)
+                    folds_run+=1
+                except Exception as e:
+                    logging.warning("{} caught: {}".format(type(e),e))
+                    pass
+            logging.debug("Adding score={} and model to results list".format(score))
+            if score>0 and folds_run>0:
+                results.append((score/folds_run,model))
+        if len(results)==0:
+            return self.base_model(self.n_constant)
+        else:
+            return max(results)[1]
+

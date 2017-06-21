@@ -122,3 +122,10 @@ $RECYCLE.BIN/
 
 # KDE directory preferences
 .directory
+
+
+.project
+.pydevproject
+AIND-Recognizer.zip
+asl_recognizer.html
+
